@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rough Walk Planner</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    #app {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      height: 100%;
+    }
+
+    #toolbar {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      padding: 0.75rem;
+      border-bottom: 1px solid #ddd;
+      background: #fff;
+      flex-wrap: wrap;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+    }
+
+    input[type="text"] {
+      width: 320px;
+      max-width: 100%;
+      padding: 0.5rem 0.6rem;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    button {
+      padding: 0.5rem 0.8rem;
+      border: 1px solid #999;
+      border-radius: 6px;
+      background: #f7f7f7;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    button:hover {
+      background: #efefef;
+    }
+
+    
+
+    .hint {
+      font-size: 13px;
+      color: #444;
+    }
+
+    .status {
+      font-size: 13px;
+      color: #0a5;
+      min-width: 220px;
+    }
+
+    .leaflet-control-container .leaflet-top.leaflet-right {
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="toolbar">
+      <input id="searchInput" type="text" placeholder="Search place or address" />
+      <button id="searchBtn">Search</button>
+      <button id="buildBtn">Open in Google Maps</button>
+      <button id="clearBtn">Clear route</button>
+      <span class="hint">Hold Shift, then click and drag to sketch a walking route.</span>
+      <span class="status" id="status"></span>
+    </div>
+    <div id="map"></div>
+  </div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    const map = L.map('map', { boxZoom: false }).setView([59.3293, 18.0686], 13);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const searchInput = document.getElementById('searchInput');
+    const searchBtn = document.getElementById('searchBtn');
+    const buildBtn = document.getElementById('buildBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const statusEl = document.getElementById('status');
+
+    let drawing = false;
+    let sampledPoints = [];
+    let snappedWaypoints = [];
+    let lastSampleTime = 0;
+    let previewRequestId = 0;
+
+    const rawLine = L.polyline([], {
+      color: '#666',
+      weight: 5,
+      dashArray: '6, 8'
+    }).addTo(map);
+
+    const waypointMarkers = L.layerGroup().addTo(map);
+
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text;
+      statusEl.style.color = isError ? '#c62828' : '#0a5';
+    }
+
+    function distanceMeters(a, b) {
+      return map.distance(a, b);
+    }
+
+    function simplifyPoints(points, minDistanceMeters = 40) {
+      if (points.length <= 2) return points.slice();
+      const out = [points[0]];
+      let last = points[0];
+      for (let i = 1; i < points.length - 1; i++) {
+        if (distanceMeters(last, points[i]) >= minDistanceMeters) {
+          out.push(points[i]);
+          last = points[i];
+        }
+      }
+      out.push(points[points.length - 1]);
+      return out;
+    }
+
+    function reduceWaypoints(points, maxPoints = 12) {
+      if (points.length <= maxPoints) return points.slice();
+      const result = [];
+      for (let i = 0; i < maxPoints; i++) {
+        const index = Math.round(i * (points.length - 1) / (maxPoints - 1));
+        result.push(points[index]);
+      }
+      return result;
+    }
+
+    function updateWaypointMarkers(points) {
+      waypointMarkers.clearLayers();
+      points.forEach((p, index) => {
+        L.circleMarker(p, {
+          radius: index === 0 || index === points.length - 1 ? 6 : 4,
+          color: '#0d47a1',
+          weight: 2,
+          fillColor: '#fff',
+          fillOpacity: 1
+        }).addTo(waypointMarkers);
+      });
+    }
+
+    async function searchPlace() {
+      const q = searchInput.value.trim();
+      if (!q) return;
+      setStatus('Searching...');
+      try {
+        const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`;
+        const res = await fetch(url, {
+          headers: {
+            'Accept': 'application/json'
+          }
+        });
+        const data = await res.json();
+        if (!data.length) {
+          setStatus('No result found.', true);
+          return;
+        }
+        const place = data[0];
+        const lat = Number(place.lat);
+        const lon = Number(place.lon);
+        map.setView([lat, lon], 16);
+        L.popup()
+          .setLatLng([lat, lon])
+          .setContent(place.display_name)
+          .openOn(map);
+        setStatus('Location found.');
+      } catch (error) {
+        console.error(error);
+        setStatus('Search failed.', true);
+      }
+    }
+
+    async function fetchRoute(points, requestLabel = 'route') {
+      const coords = points.map(p => `${p.lng},${p.lat}`).join(';');
+      const url = `https://router.project-osrm.org/route/v1/foot/${coords}?overview=full&geometries=geojson&steps=true&continue_straight=false`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`${requestLabel} request failed`);
+      }
+      const json = await res.json();
+      if (!json.routes || !json.routes.length) {
+        throw new Error('No route found');
+      }
+      return json.routes[0];
+    }
+
+    function toLatLngs(geojsonCoordinates) {
+      return geojsonCoordinates.map(([lng, lat]) => [lat, lng]);
+    }
+
+    async function updatePreviewRoute() {
+      if (sampledPoints.length < 2) return;
+
+      const simplified = simplifyPoints(sampledPoints, 35);
+      const waypoints = reduceWaypoints(simplified, 10);
+      snappedWaypoints = waypoints;
+
+      rawLine.setLatLngs(sampledPoints);
+      updateWaypointMarkers(waypoints);
+      setStatus('Sketching rough route...');
+    }
+
+    function clearRoute() {
+      drawing = false;
+      sampledPoints = [];
+      snappedWaypoints = [];
+      rawLine.setLatLngs([]);
+      waypointMarkers.clearLayers();
+      setStatus('Route cleared.');
+    }
+
+    function beginDrawing(e) {
+      if (!e.originalEvent.shiftKey) return;
+      drawing = true;
+      sampledPoints = [e.latlng];
+      snappedWaypoints = [];
+      rawLine.setLatLngs(sampledPoints);
+      waypointMarkers.clearLayers();
+      map.dragging.disable();
+      map.doubleClickZoom.disable();
+      setStatus('Sketching rough route...');
+      L.DomEvent.stop(e.originalEvent);
+    }
+
+    function continueDrawing(e) {
+      if (!drawing) return;
+      const now = performance.now();
+      const point = e.latlng;
+      const last = sampledPoints[sampledPoints.length - 1];
+      if (!last || distanceMeters(last, point) < 10) {
+        return;
+      }
+      sampledPoints.push(point);
+      rawLine.setLatLngs(sampledPoints);
+
+      if (now - lastSampleTime > 500 && sampledPoints.length >= 2) {
+        lastSampleTime = now;
+        updatePreviewRoute();
+      }
+    }
+
+    async function endDrawing() {
+      if (!drawing) return;
+      drawing = false;
+      map.dragging.enable();
+      map.doubleClickZoom.enable();
+
+      if (sampledPoints.length < 2) {
+        setStatus('Sketch too short.');
+        return;
+      }
+
+      const simplified = simplifyPoints(sampledPoints, 35);
+      const waypoints = reduceWaypoints(simplified, 12);
+      snappedWaypoints = waypoints;
+      rawLine.setLatLngs(sampledPoints);
+      updateWaypointMarkers(waypoints);
+      setStatus('Rough route kept. Click "Build walking route" to create the final path.');
+    }
+
+    function buildGoogleMapsUrl() {
+      if (!snappedWaypoints.length) {
+        return '';
+      }
+      const points = snappedWaypoints;
+      const origin = `${points[0].lat},${points[0].lng}`;
+      const destination = `${points[points.length - 1].lat},${points[points.length - 1].lng}`;
+      const intermediates = points.slice(1, -1).map(p => `${p.lat},${p.lng}`);
+      const params = new URLSearchParams({
+        api: '1',
+        origin,
+        destination,
+        travelmode: 'walking'
+      });
+      if (intermediates.length) {
+        params.set('waypoints', intermediates.join('|'));
+      }
+      return `https://www.google.com/maps/dir/?${params.toString()}`;
+    }
+
+    function openInGoogleMaps() {
+      const url = buildGoogleMapsUrl();
+      if (!url) {
+        setStatus('Sketch a rough route first.', true);
+        return;
+      }
+      window.open(url, '_blank', 'noopener');
+      setStatus('Opened rough route in Google Maps.');
+    }
+
+    map.on('mousedown', beginDrawing);
+    map.on('mousemove', continueDrawing);
+    map.on('mouseup', endDrawing);
+    map.on('mouseout', () => {
+      if (drawing) {
+        updatePreviewRoute();
+      }
+    });
+
+    searchBtn.addEventListener('click', searchPlace);
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        searchPlace();
+      }
+    });
+    buildBtn.addEventListener('click', openInGoogleMaps);
+    clearBtn.addEventListener('click', clearRoute);
+
+    setStatus('Ready. Hold Shift and drag to sketch a rough route, then open it in Google Maps.');
+  </script>
+</body>
+</html>
