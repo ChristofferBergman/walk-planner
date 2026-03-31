@@ -230,7 +230,7 @@
       return out;
     }
 
-    function reduceWaypoints(points, maxPoints = 12) {
+    function reduceWaypoints(points, maxPoints = 11) {
       if (points.length <= maxPoints) return points.slice();
       const result = [];
       for (let i = 0; i < maxPoints; i++) {
@@ -370,7 +370,7 @@
       map.getContainer().classList.remove('drawing-active');
       if (sampledPoints.length < 2) return;
       const simplified = simplifyPoints(sampledPoints, 35);
-      const waypoints = reduceWaypoints(simplified, 12);
+      const waypoints = reduceWaypoints(simplified, 11);
       snappedWaypoints = waypoints;
       rawLine.setLatLngs(sampledPoints);
       updateWaypointMarkers(waypoints);
