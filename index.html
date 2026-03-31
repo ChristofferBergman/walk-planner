@@ -67,34 +67,8 @@
       background: #efefef;
     }
 
-    
-
     #map.drawing-active {
       cursor: crosshair;
-    }
-
-    .touch-ripple {
-      position: fixed;
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      border: 3px solid rgba(21, 101, 192, 0.75);
-      background: rgba(21, 101, 192, 0.18);
-      transform: translate(-50%, -50%) scale(0.7);
-      pointer-events: none;
-      z-index: 2500;
-      animation: touchRipple 0.45s ease-out forwards;
-    }
-
-    @keyframes touchRipple {
-      0% {
-        transform: translate(-50%, -50%) scale(0.7);
-        opacity: 0.95;
-      }
-      100% {
-        transform: translate(-50%, -50%) scale(2.2);
-        opacity: 0;
-      }
     }
 
     .touch-ripple {
@@ -174,10 +148,6 @@
     .modal-checkbox input {
       margin: 0;
     }
-
-    .leaflet-control-container .leaflet-top.leaflet-right {
-      margin-top: 8px;
-    }
   </style>
 </head>
 <body>
@@ -224,15 +194,15 @@
     const dontShowAgain = document.getElementById('dontShowAgain');
     const closeHelpBtn = document.getElementById('closeHelpBtn');
 
+    const LONG_PRESS_MS = 450;
+    const HELP_MODAL_STORAGE = 'rough-walk-planner-hide-help';
+
     let drawing = false;
     let sampledPoints = [];
     let snappedWaypoints = [];
     let lastSampleTime = 0;
-    let previewRequestId = 0;
     let longPressTimer = null;
     let longPressTriggered = false;
-    const LONG_PRESS_MS = 450;
-    const HELP_MODAL_STORAGE = 'rough-walk-planner-hide-help';
 
     const rawLine = L.polyline([], {
       color: '#666',
@@ -241,9 +211,6 @@
     }).addTo(map);
 
     const waypointMarkers = L.layerGroup().addTo(map);
-
-    function setStatus() {
-    }
 
     function distanceMeters(a, b) {
       return map.distance(a, b);
@@ -292,14 +259,10 @@
       try {
         const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`;
         const res = await fetch(url, {
-          headers: {
-            'Accept': 'application/json'
-          }
+          headers: { Accept: 'application/json' }
         });
         const data = await res.json();
-        if (!data.length) {
-          return;
-        }
+        if (!data.length) return;
         const place = data[0];
         const lat = Number(place.lat);
         const lon = Number(place.lon);
@@ -313,53 +276,24 @@
       }
     }
 
-    async function fetchRoute(points, requestLabel = 'route') {
-      const coords = points.map(p => `${p.lng},${p.lat}`).join(';');
-      const url = `https://router.project-osrm.org/route/v1/foot/${coords}?overview=full&geometries=geojson&steps=true&continue_straight=false`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error(`${requestLabel} request failed`);
-      }
-      const json = await res.json();
-      if (!json.routes || !json.routes.length) {
-        throw new Error('No route found');
-      }
-      return json.routes[0];
-    }
-
-    function toLatLngs(geojsonCoordinates) {
-      return geojsonCoordinates.map(([lng, lat]) => [lat, lng]);
-    }
-
-    async function updatePreviewRoute() {
+    function updatePreviewRoute() {
       if (sampledPoints.length < 2) return;
-
       const simplified = simplifyPoints(sampledPoints, 35);
       const waypoints = reduceWaypoints(simplified, 10);
       snappedWaypoints = waypoints;
-
-      rfunction showTouchRippleFromLatLng(latlng) {
-      const point = map.latLngToContainerPoint(latlng);
-      const rect = map.getContainer().getBoundingClientRect();
-      const ripple = document.createElement('div');
-      ripple.className = 'touch-ripple';
-      ripple.style.left = (rect.left + point.x) + 'px';
-      ripple.style.top = (rect.top + point.y) + 'px';
-      document.body.appendChild(ripple);
-      ripple.addEventListener('animationend', () => ripple.remove(), { once: true });
+      rawLine.setLatLngs(sampledPoints);
+      updateWaypointMarkers(waypoints);
     }
 
-    function startDrawingAt(latlng) {
-      showTouchRippleFromLatLng(latlng);
-      if (navigator.vibrate) {
-        navigator.vibrate(30);
-      }e() {
+    function clearRoute() {
       drawing = false;
       sampledPoints = [];
       snappedWaypoints = [];
       rawLine.setLatLngs([]);
       waypointMarkers.clearLayers();
       map.getContainer().classList.remove('drawing-active');
+      map.dragging.enable();
+      map.doubleClickZoom.enable();
     }
 
     function getTouchLatLng(touchEvent) {
@@ -383,7 +317,8 @@
     function startDrawingAt(latlng) {
       showTouchRippleFromLatLng(latlng);
       if (navigator.vibrate) {
-        navigator
+        navigator.vibrate(30);
+      }
       drawing = true;
       sampledPoints = [latlng];
       snappedWaypoints = [];
@@ -394,7 +329,10 @@
       map.getContainer().classList.add('drawing-active');
     }
 
-    function beginDrawingp(e.originalEvent);
+    function beginDrawing(e) {
+      if (!e.originalEvent.shiftKey) return;
+      startDrawingAt(e.latlng);
+      L.DomEvent.stop(e.originalEvent);
     }
 
     function continueDrawing(e) {
@@ -402,12 +340,9 @@
       const now = performance.now();
       const point = e.latlng;
       const last = sampledPoints[sampledPoints.length - 1];
-      if (!last || distanceMeters(last, point) < 10) {
-        return;
-      }
+      if (!last || distanceMeters(last, point) < 10) return;
       sampledPoints.push(point);
       rawLine.setLatLngs(sampledPoints);
-
       if (now - lastSampleTime > 500 && sampledPoints.length >= 2) {
         lastSampleTime = now;
         updatePreviewRoute();
@@ -418,29 +353,22 @@
       if (!drawing || !latlng) return;
       const now = performance.now();
       const last = sampledPoints[sampledPoints.length - 1];
-      if (!last || distanceMeters(last, latlng) < 10) {
-        return;
-      }
+      if (!last || distanceMeters(last, latlng) < 10) return;
       sampledPoints.push(latlng);
       rawLine.setLatLngs(sampledPoints);
-
       if (now - lastSampleTime > 500 && sampledPoints.length >= 2) {
         lastSampleTime = now;
         updatePreviewRoute();
       }
     }
 
-    async function endDrawing() {
+    function endDrawing() {
       if (!drawing) return;
       drawing = false;
       map.dragging.enable();
       map.doubleClickZoom.enable();
       map.getContainer().classList.remove('drawing-active');
-
-      if (sampledPoints.length < 2) {
-        return;
-      }
-
+      if (sampledPoints.length < 2) return;
       const simplified = simplifyPoints(sampledPoints, 35);
       const waypoints = reduceWaypoints(simplified, 12);
       snappedWaypoints = waypoints;
@@ -449,9 +377,7 @@
     }
 
     function buildGoogleMapsUrl() {
-      if (!snappedWaypoints.length) {
-        return '';
-      }
+      if (!snappedWaypoints.length) return '';
       const points = snappedWaypoints;
       const origin = `${points[0].lat},${points[0].lng}`;
       const destination = `${points[points.length - 1].lat},${points[points.length - 1].lng}`;
@@ -470,9 +396,7 @@
 
     function openInGoogleMaps() {
       const url = buildGoogleMapsUrl();
-      if (!url) {
-        return;
-      }
+      if (!url) return;
       window.open(url, '_blank', 'noopener');
     }
 
@@ -489,16 +413,11 @@
 
     mapContainer.addEventListener('touchstart', (event) => {
       if (event.touches.length !== 1 || drawing) return;
-
       longPressTriggered = false;
       clearTimeout(longPressTimer);
-
-      
-
       longPressTimer = setTimeout(() => {
         const latlng = getTouchLatLng(event);
         if (!latlng) return;
-
         longPressTriggered = true;
         startDrawingAt(latlng);
       }, LONG_PRESS_MS);
@@ -510,33 +429,23 @@
         continueDrawingAt(getTouchLatLng(event));
         return;
       }
-
       clearTimeout(longPressTimer);
-      
     }, { passive: false });
 
     mapContainer.addEventListener('touchend', (event) => {
       clearTimeout(longPressTimer);
-
-      
-
       if (drawing && longPressTriggered) {
         event.preventDefault();
         endDrawing();
       }
-
       longPressTriggered = false;
     }, { passive: false });
 
     mapContainer.addEventListener('touchcancel', () => {
       clearTimeout(longPressTimer);
-
-      
-
       if (drawing) {
         endDrawing();
       }
-
       longPressTriggered = false;
     });
 
