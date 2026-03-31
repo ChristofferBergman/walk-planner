@@ -62,23 +62,62 @@
 
     
 
-    .hint {
-      font-size: 13px;
-      color: #444;
-    }
-
     #map.drawing-active {
       cursor: crosshair;
     }
 
-    
-      to { transform: translate(-50%, -50%) scale(1.4); opacity: 0; }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 2000;
     }
 
-    .status {
-      font-size: 13px;
-      color: #0a5;
-      min-width: 220px;
+    .modal-backdrop.hidden {
+      display: none;
+    }
+
+    .modal {
+      background: #fff;
+      width: min(560px, 100%);
+      border-radius: 12px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+      padding: 20px;
+    }
+
+    .modal h2 {
+      margin: 0 0 12px;
+      font-size: 20px;
+    }
+
+    .modal p {
+      margin: 0 0 16px;
+      line-height: 1.45;
+      color: #222;
+    }
+
+    .modal-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .modal-checkbox {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      color: #333;
+    }
+
+    .modal-checkbox input {
+      margin: 0;
     }
 
     .leaflet-control-container .leaflet-top.leaflet-right {
@@ -87,14 +126,23 @@
   </style>
 </head>
 <body>
+  <div id="helpModal" class="modal-backdrop hidden">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+      <h2 id="helpTitle">How to use this page</h2>
+      <p id="helpText"></p>
+      <div class="modal-row">
+        <label class="modal-checkbox"><input id="dontShowAgain" type="checkbox" /> Don't show again</label>
+        <button id="closeHelpBtn">Got it</button>
+      </div>
+    </div>
+  </div>
+
   <div id="app">
     <div id="toolbar">
       <input id="searchInput" type="text" placeholder="Search place or address" />
       <button id="searchBtn">Search</button>
       <button id="buildBtn">Open in Google Maps</button>
       <button id="clearBtn">Clear route</button>
-      <span class="hint">Hold Shift, then click and drag to sketch a walking route.</span>
-      <span class="status" id="status"></span>
     </div>
     <div id="map"></div>
   </div>
@@ -116,7 +164,10 @@
     const searchBtn = document.getElementById('searchBtn');
     const buildBtn = document.getElementById('buildBtn');
     const clearBtn = document.getElementById('clearBtn');
-    const statusEl = document.getElementById('status');
+    const helpModal = document.getElementById('helpModal');
+    const helpText = document.getElementById('helpText');
+    const dontShowAgain = document.getElementById('dontShowAgain');
+    const closeHelpBtn = document.getElementById('closeHelpBtn');
 
     let drawing = false;
     let sampledPoints = [];
@@ -126,6 +177,7 @@
     let longPressTimer = null;
     let longPressTriggered = false;
     const LONG_PRESS_MS = 450;
+    const HELP_MODAL_STORAGE = 'rough-walk-planner-hide-help';
 
     const rawLine = L.polyline([], {
       color: '#666',
@@ -135,9 +187,7 @@
 
     const waypointMarkers = L.layerGroup().addTo(map);
 
-    function setStatus(text, isError = false) {
-      statusEl.textContent = text;
-      statusEl.style.color = isError ? '#c62828' : '#0a5';
+    function setStatus() {
     }
 
     function distanceMeters(a, b) {
@@ -184,7 +234,6 @@
     async function searchPlace() {
       const q = searchInput.value.trim();
       if (!q) return;
-      setStatus('Searching...');
       try {
         const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`;
         const res = await fetch(url, {
@@ -194,7 +243,6 @@
         });
         const data = await res.json();
         if (!data.length) {
-          setStatus('No result found.', true);
           return;
         }
         const place = data[0];
@@ -205,10 +253,8 @@
           .setLatLng([lat, lon])
           .setContent(place.display_name)
           .openOn(map);
-        setStatus('Location found.');
       } catch (error) {
         console.error(error);
-        setStatus('Search failed.', true);
       }
     }
 
@@ -239,7 +285,6 @@
 
       rawLine.setLatLngs(sampledPoints);
       updateWaypointMarkers(waypoints);
-      setStatus('Sketching rough route...');
     }
 
     function clearRoute() {
@@ -249,7 +294,6 @@
       rawLine.setLatLngs([]);
       waypointMarkers.clearLayers();
       map.getContainer().classList.remove('drawing-active');
-      setStatus('Route cleared.');
     }
 
     function getTouchLatLng(touchEvent) {
@@ -271,7 +315,6 @@
       map.dragging.disable();
       map.doubleClickZoom.disable();
       map.getContainer().classList.add('drawing-active');
-      setStatus('Sketching rough route...');
     }
 
     function beginDrawing(e) {
@@ -321,7 +364,6 @@
       map.getContainer().classList.remove('drawing-active');
 
       if (sampledPoints.length < 2) {
-        setStatus('Sketch too short.');
         return;
       }
 
@@ -330,7 +372,6 @@
       snappedWaypoints = waypoints;
       rawLine.setLatLngs(sampledPoints);
       updateWaypointMarkers(waypoints);
-      setStatus('Rough route kept. Click "Open in Google Maps" to continue there.');
     }
 
     function buildGoogleMapsUrl() {
@@ -356,11 +397,9 @@
     function openInGoogleMaps() {
       const url = buildGoogleMapsUrl();
       if (!url) {
-        setStatus('Sketch a rough route first.', true);
         return;
       }
       window.open(url, '_blank', 'noopener');
-      setStatus('Opened rough route in Google Maps.');
     }
 
     map.on('mousedown', beginDrawing);
@@ -436,15 +475,40 @@
     buildBtn.addEventListener('click', openInGoogleMaps);
     clearBtn.addEventListener('click', clearRoute);
 
-    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    function showHelpModal() {
+      const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+      helpText.textContent = isTouchDevice
+        ? 'This page allows you to draw a rough walking path on a map and then you can open that in Google Maps with detailed walking directions, approximately following your rough path. Long-press the map to begin drawing your path and draw it with your finger pressed. Click Open in Google Maps to get the detailed instructions.'
+        : 'This page allows you to draw a rough walking path on a map and then you can open that in Google Maps with detailed walking directions, approximately following your rough path. Hold SHIFT and click the map to begin drawing your path and draw it with the button pressed. Click Open in Google Maps to get the detailed instructions.';
+      helpModal.classList.remove('hidden');
+    }
 
-    const hintEl = document.querySelector('.hint');
-    if (isTouchDevice) {
-      hintEl.textContent = 'Long-press and drag to sketch a rough route.';
-      setStatus('Ready. Long-press and drag to sketch a rough route.');
-    } else {
-      hintEl.textContent = 'Hold Shift, then click and drag to sketch a rough route.';
-      setStatus('Ready. Hold Shift and drag to sketch a rough route.');
+    closeHelpBtn.addEventListener('click', () => {
+      if (dontShowAgain.checked) {
+        localStorage.setItem(HELP_MODAL_STORAGE, 'true');
+      } else {
+        localStorage.removeItem(HELP_MODAL_STORAGE);
+      }
+      helpModal.classList.add('hidden');
+    });
+
+    if (localStorage.getItem(HELP_MODAL_STORAGE) !== 'true') {
+      showHelpModal();
+    }
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          map.setView([latitude, longitude], 15);
+        },
+        () => {},
+        {
+          enableHighAccuracy: false,
+          timeout: 8000,
+          maximumAge: 300000
+        }
+      );
     }
   </script>
 </body>
